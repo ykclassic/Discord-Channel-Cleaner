@@ -6,7 +6,7 @@ import sys
 
 # Configuration from Environment Variables
 TOKEN = os.getenv('DISCORD_TOKEN')
-CHANNELS_RAW = os.getenv('CHANNEL_ID') # Now expects "ID1, ID2, ID3"
+CHANNELS_RAW = os.getenv('CHANNEL_ID') 
 LOG_CHANNEL_ID_STR = os.getenv('LOG_CHANNEL_ID')
 
 class CleanerClient(discord.Client):
@@ -19,7 +19,7 @@ class CleanerClient(discord.Client):
             await self.close()
             return
 
-        # Split comma-separated IDs and clean whitespace
+        # Split comma-separated IDs
         channel_ids = [id.strip() for id in CHANNELS_RAW.split(',') if id.strip()]
         cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
         
@@ -38,19 +38,21 @@ class CleanerClient(discord.Client):
                 
                 total_deleted = 0
                 while True:
-                    # Purge in batches of 500
+                    # purge() automatically handles rate limits and batching
                     deleted = await channel.purge(before=cutoff, limit=500, oldest_first=True)
                     total_deleted += len(deleted)
+                    
+                    # If we deleted fewer than the limit, we've reached the end
                     if len(deleted) < 500:
                         break
                 
                 reports.append(f"• <#{target_id}>: {total_deleted} messages")
-                print(f"Done. Deleted {total_deleted} messages.")
+                print(f"Done. Deleted {total_deleted} messages from {channel.name}.")
 
             except Exception as e:
                 print(f"❌ Error on channel {cid}: {e}")
 
-        # Send Final Summary Log
+        # Final Reporting Logic
         if reports:
             summary_body = "\n".join(reports)
             summary_header = f"🗓️ **Cleanup Report ({datetime.now().strftime('%Y-%m-%d %H:%M')})**\n"
