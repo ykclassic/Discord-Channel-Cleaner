@@ -4,12 +4,14 @@ from datetime import datetime, timedelta, timezone
 import os
 import time
 
-# Configuration
+# Configuration from Environment Variables
 TOKEN = os.getenv('DISCORD_TOKEN')
 CHANNELS_RAW = os.getenv('CHANNEL_ID')
 LOG_CHANNEL_ID_STR = os.getenv('LOG_CHANNEL_ID')
-MAX_MESSAGES_PER_CHANNEL = 2000  # Cap to prevent 4-hour runs
-SCRIPT_TIMEOUT_SECONDS = 900     # 15-minute hard stop
+
+# Safety Constraints to prevent 4-hour runs
+MAX_MESSAGES_PER_CHANNEL = 2000 
+SCRIPT_TIMEOUT_SECONDS = 900 # 15-minute emergency shutoff
 
 class CleanerClient(discord.Client):
     async def on_ready(self):
@@ -17,9 +19,11 @@ class CleanerClient(discord.Client):
         print(f"--- Optimized Multi-Channel Cleanup ---")
         
         if not CHANNELS_RAW:
+            print("ERROR: No CHANNEL_ID found in secrets.")
             await self.close()
             return
 
+        # Handles "ID1,ID2" or "ID1, ID2" automatically
         channel_ids = [id.strip() for id in CHANNELS_RAW.split(',') if id.strip()]
         cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
         reports = []
@@ -27,37 +31,35 @@ class CleanerClient(discord.Client):
         for cid in channel_ids:
             # Check if we are approaching the 15-minute timeout
             if time.time() - start_time > SCRIPT_TIMEOUT_SECONDS:
-                print("⚠️ Script timeout reached. Stopping further processing.")
+                print("⚠️ Script timeout reached. Ending session to save minutes.")
                 break
 
             try:
                 channel = self.get_channel(int(cid))
-                if not channel: continue
+                if not channel:
+                    print(f"⚠️ Could not find channel {cid}")
+                    continue
 
                 print(f"Cleaning #{channel.name}...")
                 total_deleted = 0
                 
-                # Controlled loop with a maximum cap
                 while total_deleted < MAX_MESSAGES_PER_CHANNEL:
-                    # Check timeout inside the loop
                     if time.time() - start_time > SCRIPT_TIMEOUT_SECONDS: break
                     
-                    remaining = MAX_MESSAGES_PER_CHANNEL - total_deleted
-                    batch_size = min(100, remaining)
-                    
+                    batch_size = min(100, MAX_MESSAGES_PER_CHANNEL - total_deleted)
+                    # purge() handles the 14-day rule logic automatically
                     deleted = await channel.purge(before=cutoff, limit=batch_size, oldest_first=True)
                     total_deleted += len(deleted)
                     
                     if len(deleted) == 0: break
-                    # Small sleep to respect API rate limits
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(1) # Respect Rate Limits
 
                 reports.append(f"• <#{cid}>: {total_deleted} messages")
 
             except Exception as e:
                 print(f"❌ Error on {cid}: {e}")
 
-        # Send Summary Report
+        # Summary Log
         if reports and LOG_CHANNEL_ID_STR:
             log_channel = self.get_channel(int(LOG_CHANNEL_ID_STR))
             if log_channel:
