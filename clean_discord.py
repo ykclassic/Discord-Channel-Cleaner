@@ -6,76 +6,59 @@ import sys
 
 # Configuration from Environment Variables
 TOKEN = os.getenv('DISCORD_TOKEN')
-# Using a string first to handle potential formatting issues
 CHANNEL_ID_STR = os.getenv('CHANNEL_ID')
+LOG_CHANNEL_ID_STR = os.getenv('LOG_CHANNEL_ID') # Optional: Add a separate ID for logs
 
 class CleanerClient(discord.Client):
     async def on_ready(self):
         print(f"--- Connection Successful ---")
-        print(f"Logged in as: {self.user} (ID: {self.user.id})")
-        
-        # --- DEBUG BLOCK: Visualizing Bot Access ---
-        print(f"Connected to {len(self.guilds)} server(s):")
-        for guild in self.guilds:
-            print(f" - {guild.name} (ID: {guild.id})")
         
         if not CHANNEL_ID_STR:
-            print("ERROR: CHANNEL_ID environment variable is missing in GitHub Secrets.")
+            print("ERROR: CHANNEL_ID missing.")
             await self.close()
             return
 
         try:
-            # Clean the ID string in case of accidental spaces/quotes
             target_id = int(''.join(filter(str.isdigit, CHANNEL_ID_STR)))
             channel = self.get_channel(target_id)
             
             if channel is None:
-                print(f"ERROR: Could not find channel with ID {target_id}.")
-                print("POSSIBLE REASONS:")
-                print("1. The Bot is not invited to the server listed above.")
-                print("2. The Bot does not have 'View Channel' permissions for that specific channel.")
-                print("3. The ID belongs to a Category or Thread, not a Text Channel.")
+                print(f"ERROR: Could not find channel {target_id}")
                 await self.close()
                 return
 
-            # Calculate the cutoff (24 hours ago)
             cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
-            
-            print(f"Target Channel: #{channel.name} (Server: {channel.guild.name})")
-            print(f"Purging messages older than: {cutoff}")
+            print(f"Purging #{channel.name} messages older than: {cutoff}")
 
-            # Discord's purge logic
-            deleted = await channel.purge(before=cutoff, oldest_first=True)
+            # Unlimited Purge: Loop until all old messages are gone
+            total_deleted = 0
+            while True:
+                # Use a high limit to clear large spans of spam
+                deleted = await channel.purge(before=cutoff, limit=500, oldest_first=True)
+                total_deleted += len(deleted)
+                if len(deleted) < 500: # If we deleted fewer than the limit, we're done
+                    break
             
-            print(f"SUCCESS: Deleted {len(deleted)} messages.")
+            summary_msg = f"✅ **Cleanup Report**: Cleared **{total_deleted}** messages from <#{target_id}> (Older than 24hrs)."
+            print(summary_msg)
 
-        except ValueError:
-            print(f"ERROR: CHANNEL_ID '{CHANNEL_ID_STR}' is not a valid number.")
-        except discord.Forbidden:
-            print("ERROR: Bot lacks 'Manage Messages' or 'Read Message History' permissions in that channel.")
+            # Logging Feature: Send report to a channel
+            log_id = int(LOG_CHANNEL_ID_STR) if LOG_CHANNEL_ID_STR else target_id
+            log_channel = self.get_channel(log_id)
+            if log_channel:
+                await log_channel.send(summary_msg)
+
         except Exception as e:
-            print(f"CRITICAL ERROR: {type(e).__name__}: {e}")
+            print(f"CRITICAL ERROR: {e}")
         
         await self.close()
 
 async def main():
-    if not TOKEN:
-        print("ERROR: DISCORD_TOKEN is missing in GitHub Secrets.")
-        sys.exit(1)
-
-    # Required Intents for reading and deleting messages
     intents = discord.Intents.default()
     intents.messages = True
-    intents.message_content = True  # Must be enabled in Discord Dev Portal
-    
+    intents.message_content = True
     client = CleanerClient(intents=intents)
-    
-    try:
-        await client.start(TOKEN)
-    except discord.LoginFailure:
-        print("ERROR: Invalid DISCORD_TOKEN. Please check your GitHub Secrets.")
-    except Exception as e:
-        print(f"FAILED TO START: {e}")
+    await client.start(TOKEN)
 
 if __name__ == "__main__":
     asyncio.run(main())
