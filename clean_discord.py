@@ -2,69 +2,67 @@ import discord
 import asyncio
 from datetime import datetime, timedelta, timezone
 import os
-import sys
+import time
 
-# Configuration from Environment Variables
+# Configuration
 TOKEN = os.getenv('DISCORD_TOKEN')
-CHANNELS_RAW = os.getenv('CHANNEL_ID') 
+CHANNELS_RAW = os.getenv('CHANNEL_ID')
 LOG_CHANNEL_ID_STR = os.getenv('LOG_CHANNEL_ID')
+MAX_MESSAGES_PER_CHANNEL = 2000  # Cap to prevent 4-hour runs
+SCRIPT_TIMEOUT_SECONDS = 900     # 15-minute hard stop
 
 class CleanerClient(discord.Client):
     async def on_ready(self):
-        print(f"--- Multi-Channel Cleanup Started ---")
-        print(f"Logged in as: {self.user}")
-
+        start_time = time.time()
+        print(f"--- Optimized Multi-Channel Cleanup ---")
+        
         if not CHANNELS_RAW:
-            print("ERROR: No CHANNEL_ID provided.")
             await self.close()
             return
 
-        # Split comma-separated IDs
         channel_ids = [id.strip() for id in CHANNELS_RAW.split(',') if id.strip()]
         cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
-        
         reports = []
 
         for cid in channel_ids:
-            try:
-                target_id = int(cid)
-                channel = self.get_channel(target_id)
-                
-                if channel is None:
-                    print(f"⚠️ Could not find or access channel ID: {target_id}")
-                    continue
+            # Check if we are approaching the 15-minute timeout
+            if time.time() - start_time > SCRIPT_TIMEOUT_SECONDS:
+                print("⚠️ Script timeout reached. Stopping further processing.")
+                break
 
-                print(f"Processing #{channel.name} in {channel.guild.name}...")
-                
+            try:
+                channel = self.get_channel(int(cid))
+                if not channel: continue
+
+                print(f"Cleaning #{channel.name}...")
                 total_deleted = 0
-                while True:
-                    # purge() automatically handles rate limits and batching
-                    deleted = await channel.purge(before=cutoff, limit=500, oldest_first=True)
+                
+                # Controlled loop with a maximum cap
+                while total_deleted < MAX_MESSAGES_PER_CHANNEL:
+                    # Check timeout inside the loop
+                    if time.time() - start_time > SCRIPT_TIMEOUT_SECONDS: break
+                    
+                    remaining = MAX_MESSAGES_PER_CHANNEL - total_deleted
+                    batch_size = min(100, remaining)
+                    
+                    deleted = await channel.purge(before=cutoff, limit=batch_size, oldest_first=True)
                     total_deleted += len(deleted)
                     
-                    # If we deleted fewer than the limit, we've reached the end
-                    if len(deleted) < 500:
-                        break
-                
-                reports.append(f"• <#{target_id}>: {total_deleted} messages")
-                print(f"Done. Deleted {total_deleted} messages from {channel.name}.")
+                    if len(deleted) == 0: break
+                    # Small sleep to respect API rate limits
+                    await asyncio.sleep(1)
+
+                reports.append(f"• <#{cid}>: {total_deleted} messages")
 
             except Exception as e:
-                print(f"❌ Error on channel {cid}: {e}")
+                print(f"❌ Error on {cid}: {e}")
 
-        # Final Reporting Logic
-        if reports:
-            summary_body = "\n".join(reports)
-            summary_header = f"🗓️ **Cleanup Report ({datetime.now().strftime('%Y-%m-%d %H:%M')})**\n"
-            full_report = f"{summary_header}{summary_body}\n*Criteria: Older than 24hrs*"
-
-            log_id = int(LOG_CHANNEL_ID_STR) if LOG_CHANNEL_ID_STR else None
-            if log_id:
-                log_channel = self.get_channel(log_id)
-                if log_channel:
-                    await log_channel.send(full_report)
-            else:
-                print("No LOG_CHANNEL_ID set. Summary printed to console.")
+        # Send Summary Report
+        if reports and LOG_CHANNEL_ID_STR:
+            log_channel = self.get_channel(int(LOG_CHANNEL_ID_STR))
+            if log_channel:
+                report_text = f"🗓️ **Cleanup Report**\n" + "\n".join(reports)
+                await log_channel.send(report_text)
 
         await self.close()
 
