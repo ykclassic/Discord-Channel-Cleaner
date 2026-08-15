@@ -72,7 +72,7 @@ class CleanerClient(discord.Client):
                 print("Could not send log message.")
 
         await self.close()
-
+ 
 async def main():
     intents = discord.Intents.default()
     intents.messages = True
